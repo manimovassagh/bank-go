@@ -1,7 +1,7 @@
 db:
-	
+	docker compose up -d
 
-build:
+build: db
 	@go build -o bin/main .
 
 run: build
