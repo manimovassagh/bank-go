@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// Models
 type Customer struct {
 	ID          uint
 	FirstName   string
@@ -31,7 +32,7 @@ type Account struct {
 
 type Transaction struct {
 	ID              uint
-	FromAccountID   uint
+	FromAccountID   *uint // Make this a pointer to handle null values
 	ToAccountID     uint
 	TransactionType string
 	Amount          float64
@@ -39,6 +40,7 @@ type Transaction struct {
 	UpdatedAt       time.Time
 }
 
+// Service
 type BankingService struct {
 	DB *gorm.DB
 }
@@ -58,7 +60,7 @@ func (s *BankingService) Deposit(accountID uint, amount float64) error {
 	account.Balance += amount
 
 	transaction := Transaction{
-		FromAccountID:   0,
+		FromAccountID:   nil,
 		ToAccountID:     account.ID,
 		TransactionType: "deposit",
 		Amount:          amount,
@@ -89,7 +91,7 @@ func (s *BankingService) Withdraw(accountID uint, amount float64) error {
 	account.Balance -= amount
 
 	transaction := Transaction{
-		FromAccountID:   account.ID,
+		FromAccountID:   &account.ID,
 		ToAccountID:     0,
 		TransactionType: "withdrawal",
 		Amount:          amount,
@@ -126,7 +128,7 @@ func (s *BankingService) Transfer(fromAccountID, toAccountID uint, amount float6
 	toAccount.Balance += amount
 
 	transaction := Transaction{
-		FromAccountID:   fromAccount.ID,
+		FromAccountID:   &fromAccount.ID,
 		ToAccountID:     toAccount.ID,
 		TransactionType: "transfer",
 		Amount:          amount,
@@ -185,7 +187,7 @@ func (s *BankingService) GetAccountHistoryByAccountNumber(accountNumber string) 
 		case "withdrawal":
 			balance -= transaction.Amount
 		case "transfer":
-			if transaction.FromAccountID == account.ID {
+			if *transaction.FromAccountID == account.ID {
 				balance -= transaction.Amount
 			} else {
 				balance += transaction.Amount
@@ -202,6 +204,7 @@ func (s *BankingService) GetAccountHistoryByAccountNumber(accountNumber string) 
 	return response, nil
 }
 
+// Seed data
 func SeedData(db *gorm.DB) {
 	// Seed customers
 	customer1 := Customer{
@@ -212,6 +215,14 @@ func SeedData(db *gorm.DB) {
 	}
 	db.Create(&customer1)
 
+	customer2 := Customer{
+		FirstName:   "Jane",
+		LastName:    "Smith",
+		PhoneNumber: "0987654321",
+		Email:       "jane.smith@example.com",
+	}
+	db.Create(&customer2)
+
 	// Seed accounts
 	account1 := Account{
 		AccountNumber: "123456789",
@@ -220,9 +231,16 @@ func SeedData(db *gorm.DB) {
 	}
 	db.Create(&account1)
 
+	account2 := Account{
+		AccountNumber: "987654321",
+		Balance:       500.00,
+		CustomerID:    customer2.ID,
+	}
+	db.Create(&account2)
+
 	// Seed transactions
 	transaction1 := Transaction{
-		FromAccountID:   0,
+		FromAccountID:   nil,
 		ToAccountID:     account1.ID,
 		TransactionType: "deposit",
 		Amount:          300.00,
@@ -230,51 +248,32 @@ func SeedData(db *gorm.DB) {
 	db.Create(&transaction1)
 
 	transaction2 := Transaction{
-		FromAccountID:   0,
+		FromAccountID:   nil,
 		ToAccountID:     account1.ID,
 		TransactionType: "deposit",
 		Amount:          200.00,
 	}
 	db.Create(&transaction2)
-
-	transaction3 := Transaction{
-		FromAccountID:   account1.ID,
-		ToAccountID:     0,
-		TransactionType: "withdrawal",
-		Amount:          50.00,
-	}
-	db.Create(&transaction3)
-
-	transaction4 := Transaction{
-		FromAccountID:   account1.ID,
-		ToAccountID:     0,
-		TransactionType: "transfer",
-		Amount:          100.00,
-	}
-	db.Create(&transaction4)
 }
 
+// Controller setup
 func main() {
-	// Connect to the PostgreSQL database
 	dsn := "host=localhost user=postgres password=postgres dbname=bank port=5432 sslmode=disable"
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
 		panic("failed to connect database")
 	}
 
-	// Migrate all tables
+	// Auto migrate
 	db.AutoMigrate(&Customer{}, &Account{}, &Transaction{})
 
-	// Create banking service
-	service := NewBankingService(db)
-
-	// Seed sample data
+	// Seed data
 	SeedData(db)
 
-	// Initialize Echo
+	service := NewBankingService(db)
 	e := echo.New()
 
-	// Define route for getting account history
+	// Define route for account history
 	e.GET("/accounts/:account_number/history", func(c echo.Context) error {
 		accountNumber := c.Param("account_number")
 		history, err := service.GetAccountHistoryByAccountNumber(accountNumber)
@@ -284,6 +283,76 @@ func main() {
 		return c.JSON(http.StatusOK, history)
 	})
 
-	// Start the server
-	e.Logger.Fatal(e.Start(":8080"))
+	// Define route for deposit
+	e.POST("/accounts/:account_number/deposit", func(c echo.Context) error {
+		accountNumber := c.Param("account_number")
+		var request struct {
+			Amount float64 `json:"amount"`
+		}
+		if err := c.Bind(&request); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		}
+
+		var account Account
+		if err := db.Where("account_number = ?", accountNumber).First(&account).Error; err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "account not found"})
+		}
+
+		if err := service.Deposit(account.ID, request.Amount); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]string{"message": "deposit successful"})
+	})
+
+	// Define route for withdraw
+	e.POST("/accounts/:account_number/withdraw", func(c echo.Context) error {
+		accountNumber := c.Param("account_number")
+		var request struct {
+			Amount float64 `json:"amount"`
+		}
+		if err := c.Bind(&request); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		}
+
+		var account Account
+		if err := db.Where("account_number = ?", accountNumber).First(&account).Error; err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "account not found"})
+		}
+
+		if err := service.Withdraw(account.ID, request.Amount); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]string{"message": "withdrawal successful"})
+	})
+
+	// Define route for transfer
+	e.POST("/accounts/:from_account_number/transfer/:to_account_number", func(c echo.Context) error {
+		fromAccountNumber := c.Param("from_account_number")
+		toAccountNumber := c.Param("to_account_number")
+		var request struct {
+			Amount float64 `json:"amount"`
+		}
+		if err := c.Bind(&request); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		}
+
+		var fromAccount Account
+		if err := db.Where("account_number = ?", fromAccountNumber).First(&fromAccount).Error; err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "from account not found"})
+		}
+
+		var toAccount Account
+		if err := db.Where("account_number = ?", toAccountNumber).First(&toAccount).Error; err != nil {
+			return c.JSON(http.StatusNotFound, map[string]string{"error": "to account not found"})
+		}
+
+		if err := service.Transfer(fromAccount.ID, toAccount.ID, request.Amount); err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		}
+		return c.JSON(http.StatusOK, map[string]string{"message": "transfer successful"})
+	})
+
+	// Start server
+	e.Start(":8080")
 }
